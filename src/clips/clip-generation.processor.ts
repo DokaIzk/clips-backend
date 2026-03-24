@@ -11,6 +11,8 @@ import {
   CLIP_GENERATION_FAILED_EVENT,
   ClipGenerationFailedPayload,
 } from './clips.events';
+import { ClipsGateway } from './clips.gateway';
+import { ClipsService } from './clips.service';
 
 export interface ClipGenerationJob {
   videoId: string;
@@ -60,6 +62,8 @@ export class ClipGenerationProcessor extends WorkerHost {
   constructor(
     private readonly cloudinaryService: CloudinaryService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly clipsGateway: ClipsGateway,
+    private readonly clipsService: ClipsService,
   ) {
     super();
   }
@@ -78,6 +82,7 @@ export class ClipGenerationProcessor extends WorkerHost {
     try {
       // FFmpeg cut — may throw transiently (OOM, network mount, etc.)
       this.logger.log(`Starting clip generation: ${clipId}`);
+      await job.updateProgress(10);
       await cutClip({
         inputPath: data.inputPath,
         outputPath: data.outputPath,
@@ -85,6 +90,7 @@ export class ClipGenerationProcessor extends WorkerHost {
         endTime: data.endTime,
         videoDuration: data.videoDuration,
       });
+      await job.updateProgress(50);
 
       const viralityScore = calculateViralityScore({
         durationSeconds,
@@ -100,6 +106,7 @@ export class ClipGenerationProcessor extends WorkerHost {
       );
 
       // Upload to Cloudinary with 2 retries
+      await job.updateProgress(80);
       const uploadResult = await this.uploadToCloudinary(
         data.outputPath,
         clipId,
@@ -140,6 +147,7 @@ export class ClipGenerationProcessor extends WorkerHost {
       this.logger.log(
         `Clip processing complete: ${clipId} → ${uploadResult.secure_url}`,
       );
+      await job.updateProgress(100);
 
       return {
         id: clipId,
@@ -253,5 +261,25 @@ export class ClipGenerationProcessor extends WorkerHost {
     };
 
     this.eventEmitter.emit(CLIP_GENERATION_FAILED_EVENT, payload);
+  }
+
+  @OnWorkerEvent('progress')
+  onProgress(job: Job<ClipGenerationJob>, progress: number): void {
+    const video = this.clipsService._getVideo(job.data.videoId);
+    const userId = video?.userId;
+    if (!userId) return;
+    const clipId = `${job.data.videoId}-${job.data.startTime}-${job.data.endTime}`;
+    const payload = {
+      jobId: job.id,
+      videoId: job.data.videoId,
+      percent: Math.max(0, Math.min(100, Math.round(Number(progress) || 0))),
+      currentClip: {
+        id: clipId,
+        startTime: job.data.startTime,
+        endTime: job.data.endTime,
+        positionRatio: job.data.positionRatio,
+      },
+    };
+    this.clipsGateway.emitProgressToUser(userId, payload);
   }
 }
