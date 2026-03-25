@@ -4,13 +4,18 @@ import {
   Post,
   Body,
   Req,
+  Query,
   UseGuards,
   ValidationPipe,
   BadRequestException,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { SignupDto } from './dto/signup.dto';
+import { MagicLinkRequestDto } from './dto/magic-link.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -38,10 +43,43 @@ export class AuthController {
   @UseGuards(AuthGuard('google'))
   async googleCallback(@Req() req: any) {
     const user = req.user;
-    const tokens = this.authService.issueTokens({
+    const tokens = await this.authService.issueTokensWithRefresh({
       id: user.id,
       email: user.email ?? null,
     });
     return { user, tokens };
+  }
+
+  @Post('magic-link')
+  async requestMagicLink(
+    @Body(new ValidationPipe({ transform: true })) dto: MagicLinkRequestDto,
+  ) {
+    await this.authService.requestMagicLink(dto.email);
+    // Always return 200 to avoid email enumeration
+    return { message: 'If that email exists, a magic link has been sent.' };
+  }
+
+  @Get('verify-magic')
+  async verifyMagicLink(@Query('token') token: string) {
+    if (!token) {
+      throw new BadRequestException('Token is required');
+    }
+    return this.authService.verifyMagicLink(token);
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  async refresh(
+    @Body(new ValidationPipe({ transform: true })) dto: RefreshTokenDto,
+  ) {
+    return this.authService.refreshTokens(dto.refreshToken);
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async logout(
+    @Body(new ValidationPipe({ transform: true })) dto: RefreshTokenDto,
+  ) {
+    await this.authService.logout(dto.refreshToken);
   }
 }

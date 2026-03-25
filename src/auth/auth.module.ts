@@ -4,10 +4,14 @@ import { JwtModule } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { GoogleStrategy } from './strategies/google.strategy';
+import { JwtStrategy } from './strategies/jwt.strategy';
 import { IsStrongPasswordConstraint } from './validators/is-strong-password.validator';
+import { MailService } from './mail.service';
+import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
   imports: [
+    PrismaModule,
     PassportModule.register({ session: false }),
     JwtModule.registerAsync({
       useFactory: () => {
@@ -23,6 +27,6 @@ import { IsStrongPasswordConstraint } from './validators/is-strong-password.vali
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, GoogleStrategy, IsStrongPasswordConstraint],
+  providers: [AuthService, GoogleStrategy, JwtStrategy, IsStrongPasswordConstraint, MailService],
 })
 export class AuthModule {}
