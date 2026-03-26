@@ -76,6 +76,14 @@ export class AuthController {
     return this.authService.verifyMagicLink(token);
   }
 
+  @Get('verify-email')
+  async verifyEmail(@Query('token') token: string) {
+    if (!token) {
+      throw new BadRequestException('Token is required');
+    }
+    return this.authService.verifyEmail(token);
+  }
+
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(

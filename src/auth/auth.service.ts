@@ -9,7 +9,7 @@ import { LoginDto } from './dto/login.dto';
 import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
 
-type JwtUser = { id: number; email: string | null };
+type JwtUser = { id: number; email: string | null; emailVerified?: Date | null };
 
 const REFRESH_TOKEN_EXPIRES_DAYS =
   Number(process.env.JWT_REFRESH_EXPIRES_DAYS) > 0
@@ -48,7 +48,7 @@ export class AuthService {
         if (!existingByEmail.provider || !existingByEmail.providerId) {
           return this.prisma.user.update({
             where: { id: existingByEmail.id },
-            data: { provider, providerId },
+            data: { provider, providerId, emailVerified: existingByEmail.emailVerified || new Date() },
           });
         }
         return existingByEmail;
@@ -62,12 +62,13 @@ export class AuthService {
         providerId,
         name: name || undefined,
         picture: picture || undefined,
+        emailVerified: new Date(), // Auto verify oauth
       },
     });
   }
 
   issueTokens(user: JwtUser) {
-    const payload = { sub: user.id, email: user.email };
+    const payload = { sub: user.id, email: user.email, emailVerified: !!user.emailVerified };
     const accessToken = this.jwtService.sign(payload);
     return { accessToken };
   }
@@ -112,7 +113,7 @@ export class AuthService {
     });
 
     const { user } = stored;
-    return this.issueTokensWithRefresh({ id: user.id, email: user.email });
+    return this.issueTokensWithRefresh({ id: user.id, email: user.email, emailVerified: user.emailVerified });
   }
 
   async logout(rawToken: string) {
@@ -157,10 +158,23 @@ export class AuthService {
       },
     });
 
+    // Generate Email Verification Token
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    await this.prisma.emailVerificationToken.create({
+      data: { userId: user.id, tokenHash, expiresAt },
+    });
+
+    // Send the email
+    await this.mailService.sendVerificationEmail(email, rawToken);
+
     // Issue tokens
     const tokens = await this.issueTokensWithRefresh({
       id: user.id,
       email: user.email,
+      emailVerified: null,
     });
 
     return {
@@ -169,9 +183,44 @@ export class AuthService {
         email: user.email,
         name: user.name,
         picture: user.picture,
+        emailVerified: false,
       },
       tokens,
     };
+  }
+
+  async verifyEmail(rawToken: string) {
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    const verificationToken = await this.prisma.emailVerificationToken.findUnique({
+      where: { tokenHash },
+    });
+
+    if (!verificationToken) {
+      throw new NotFoundException('Invalid or expired verification link');
+    }
+
+    if (verificationToken.usedAt) {
+      throw new UnauthorizedException('Verification link has already been used');
+    }
+
+    if (verificationToken.expiresAt < new Date()) {
+      throw new UnauthorizedException('Verification link has expired');
+    }
+
+    // Mark as used and update user
+    await this.prisma.$transaction([
+      this.prisma.emailVerificationToken.update({
+        where: { id: verificationToken.id },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.user.update({
+        where: { id: verificationToken.userId },
+        data: { emailVerified: new Date() },
+      })
+    ]);
+
+    return { message: 'Email successfully verified' };
   }
 
   async login(dto: LoginDto) {
@@ -205,7 +254,7 @@ export class AuthService {
       }
     }
 
-    const tokens = await this.issueTokensWithRefresh({ id: user.id, email: user.email });
+    const tokens = await this.issueTokensWithRefresh({ id: user.id, email: user.email, emailVerified: user.emailVerified });
     return {
       user: {
         id: user.id,
@@ -213,6 +262,7 @@ export class AuthService {
         name: user.name,
         picture: user.picture,
         mfaEnabled: user.mfaEnabled,
+        emailVerified: !!user.emailVerified,
       },
       tokens,
     };
@@ -264,7 +314,7 @@ export class AuthService {
     });
 
     const { user } = magicLink;
-    const tokens = await this.issueTokensWithRefresh({ id: user.id, email: user.email });
+    const tokens = await this.issueTokensWithRefresh({ id: user.id, email: user.email, emailVerified: user.emailVerified });
 
     return {
       user: {
@@ -272,6 +322,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         picture: user.picture,
+        emailVerified: !!user.emailVerified,
       },
       tokens,
     };
