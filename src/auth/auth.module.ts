@@ -8,6 +8,7 @@ import { GoogleStrategy } from './strategies/google.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { IsStrongPasswordConstraint } from './validators/is-strong-password.validator';
 import { MailService } from './mail.service';
+import { CookieService } from './cookie.service';
 import { DeviceFingerprintService } from './device-fingerprint.service';
 import { BruteForceProtectionService } from './brute-force-protection.service';
 import { PrismaModule } from '../prisma/prisma.module';
@@ -37,6 +38,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     JwtStrategy,
     IsStrongPasswordConstraint,
     MailService,
+    CookieService,
     DeviceFingerprintService,
     BruteForceProtectionService,
   ],
