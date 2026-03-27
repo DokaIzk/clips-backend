@@ -1,10 +1,14 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
+import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Parse cookies (required for httpOnly cookie-based JWT support)
+  app.use(cookieParser());
 
   // Security headers with Helmet
   app.use(
@@ -22,27 +26,26 @@ async function bootstrap() {
           frameSrc: [`'none'`],
         },
       },
-      crossOriginEmbedderPolicy: false, // Allow embedding resources
+      crossOriginEmbedderPolicy: false,
       hsts: {
         maxAge: 31536000,
         includeSubDomains: true,
         preload: true,
       },
-      noSniff: true, // X-Content-Type-Options: nosniff
-      xssFilter: true, // X-XSS-Protection: 1; mode=block
-      hidePoweredBy: true, // Remove X-Powered-By header
+      noSniff: true,
+      xssFilter: true,
+      hidePoweredBy: true,
       frameguard: {
-        action: 'deny', // X-Frame-Options: DENY (prevents clickjacking)
+        action: 'deny',
       },
     }),
   );
 
-  // This is the "Magic Line" that turns on the security for every door
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true, // Strips away any data that isn't in our DTOs
-      forbidNonWhitelisted: true, // Rejects the request if extra data is sent
-      transform: true, // Automatically converts data to the right type
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
     }),
   );
 
