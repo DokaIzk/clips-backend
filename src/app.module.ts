@@ -9,6 +9,7 @@ import { VideosModule } from './videos/videos.module';
 import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { JobsModule } from './jobs/jobs.module';
+import { PayoutsModule } from './payouts/payouts.module';
 
 @Module({
   imports: [
