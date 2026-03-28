@@ -1,9 +1,14 @@
+
+import { Controller, Get, Post, Body, Param, Req, UseGuards } from '@nestjs/common';
 import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags, ApiQuery } from '@nestjs/swagger';
+
 import type { Request } from 'express';
 import { WalletService } from './wallet.service';
 import { StellarService } from '../stellar/stellar.service';
 import { LoginGuard } from '../auth/guards/login.guard';
+import { ConnectWalletDto } from './dto/connect-wallet.dto';
+
 import { Public } from '../auth/decorators/public.decorator';
 
 @ApiTags('wallets')
@@ -33,6 +38,13 @@ export class WalletController {
   })
   validateWallet(@Query('address') address: string) {
     return this.stellarService.validateAddress(address);
+  }
+
+  /** POST /wallets/connect — connect a new wallet */
+  @Post('connect')
+  connectWallet(@Body() dto: ConnectWalletDto, @Req() req: Request) {
+    const userId = Number((req as any).user?.id ?? 0);
+    return this.walletService.connectWallet(userId, dto);
   }
 
   /** GET /wallets — list current user's wallets (addresses masked) */
