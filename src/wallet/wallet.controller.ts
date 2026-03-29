@@ -1,6 +1,14 @@
 
-import { Controller, Get, Post, Body, Param, Req, UseGuards } from '@nestjs/common';
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags, ApiQuery } from '@nestjs/swagger';
 
 import type { Request } from 'express';
@@ -63,5 +71,20 @@ export class WalletController {
   getWallet(@Param('id') id: string, @Req() req: Request) {
     const userId = Number((req as any).user?.id ?? 0);
     return this.walletService.getWalletById(Number(id), userId);
+  }
+  /** GET /wallets/:id/balance — get XLM balance for a wallet */
+  @Get(':id/balance')
+  @ApiOperation({ summary: 'Get XLM balance for a specific wallet' })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet balance and warnings',
+  })
+  getWalletBalance(@Param('id') id: string, @Req() req: Request) {
+    const userId = Number((req as any).user?.id ?? 0);
+    return this.walletService.getWalletBalance(
+      Number(id),
+      userId,
+      this.stellarService,
+    );
   }
 }

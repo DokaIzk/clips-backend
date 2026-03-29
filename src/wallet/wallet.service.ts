@@ -82,4 +82,27 @@ export class WalletService {
 
     return this.applyMask(wallet);
   }
+  async getWalletBalance(id: number, userId: number, stellarService: any) {
+    const wallet = await this.prisma.wallet.findFirst({
+      where: { id, userId },
+    });
+    if (!wallet) throw new NotFoundException(`Wallet ${id} not found`);
+
+    if (wallet.chain !== 'stellar') {
+      throw new BadRequestException('Balance check only supported for Stellar wallets');
+    }
+
+    const balance = await stellarService.getAccountBalance(wallet.address);
+    const warning =
+      balance < 2
+        ? 'Warning: Low XLM balance (below 2 XLM). Minting may fail.'
+        : null;
+
+    return {
+      address: wallet.address,
+      balance,
+      asset: 'XLM',
+      warning,
+    };
+  }
 }
