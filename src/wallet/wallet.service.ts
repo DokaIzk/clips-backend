@@ -39,9 +39,17 @@ export class WalletService {
    * Validates address, checks for duplicates, and upserts.
    */
   async connectWallet(userId: number, dto: ConnectWalletDto) {
-    // 1. Validate Stellar address
-    if (!StrKey.isValidEd25519PublicKey(dto.address)) {
-      throw new BadRequestException('Invalid Stellar address');
+    // 1. Validate address based on chain
+    if (dto.chain === 'stellar') {
+      if (!StrKey.isValidEd25519PublicKey(dto.address)) {
+        throw new BadRequestException('Invalid Stellar address');
+      }
+    } else if (dto.chain === 'base') {
+      // Basic EVM address validation (0x followed by 40 hex characters)
+      const evmRegex = /^0x[a-fA-F0-9]{40}$/;
+      if (!evmRegex.test(dto.address)) {
+        throw new BadRequestException('Invalid Base address');
+      }
     }
 
     // 2. Upsert logic (check for existing userId + address)
