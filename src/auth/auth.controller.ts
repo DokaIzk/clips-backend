@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Req,
+  Res,
   Query,
   UseGuards,
   ValidationPipe,
@@ -11,8 +12,13 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthGuard } from '@nestjs/passport';
+import { Response } from 'express';
 import { AuthService } from './auth.service';
+import { CookieService } from './cookie.service';
+import { DeviceFingerprintService } from './device-fingerprint.service';
+import { BruteForceGuard } from './guards/brute-force.guard';
 import { SignupDto } from './dto/signup.dto';
 import { MagicLinkRequestDto } from './dto/magic-link.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -22,12 +28,26 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly cookieService: CookieService,
+    private readonly deviceFingerprintService: DeviceFingerprintService,
+  ) {}
 
   @Post('signup')
-  async signup(@Body(new ValidationPipe({ transform: true })) signupDto: SignupDto) {
+  @Throttle({ auth: { limit: 10, ttl: 60000 } })
+  async signup(
+    @Body(new ValidationPipe({ transform: true })) signupDto: SignupDto,
+    @Res({ passthrough: true }) res: Response,
+    @Query('use_cookies') useCookies?: string,
+  ) {
     try {
-      return await this.authService.signup(signupDto);
+      const result = await this.authService.signup(signupDto);
+      if (useCookies === 'true') {
+        this.cookieService.setTokenCookies(res, result.tokens);
+        return { user: result.user };
+      }
+      return result;
     } catch (error) {
       if (error instanceof BadRequestException) {
         throw error;
@@ -37,9 +57,25 @@ export class AuthController {
   }
 
   @Post('login')
+  @UseGuards(BruteForceGuard)
+  @Throttle({ auth: { limit: 10, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
-  async login(@Body(new ValidationPipe({ transform: true })) dto: LoginDto) {
-    return this.authService.login(dto);
+  async login(
+    @Body(new ValidationPipe({ transform: true })) dto: LoginDto,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: Response,
+    @Query('use_cookies') useCookies?: string,
+  ) {
+    const deviceFingerprint =
+      this.deviceFingerprintService.extractFromRequest(req);
+    const fingerprint =
+      this.deviceFingerprintService.generateFingerprint(deviceFingerprint);
+    const result = await this.authService.login(dto, fingerprint);
+    if (useCookies === 'true') {
+      this.cookieService.setTokenCookies(res, result.tokens);
+      return { user: result.user };
+    }
+    return result;
   }
 
   @Get('google')
@@ -50,13 +86,22 @@ export class AuthController {
 
   @Get('google/callback')
   @UseGuards(AuthGuard('google'))
-  async googleCallback(@Req() req: any) {
+  async googleCallback(@Req() req: any, @Res({ passthrough: true }) res: Response) {
     const user = req.user;
-    const tokens = await this.authService.issueTokensWithRefresh({
-      id: user.id,
-      email: user.email ?? null,
-    });
-    return { user, tokens };
+    const deviceFingerprint =
+      this.deviceFingerprintService.extractFromRequest(req);
+    const fingerprint =
+      this.deviceFingerprintService.generateFingerprint(deviceFingerprint);
+    const tokens = await this.authService.issueTokensWithRefresh(
+      {
+        id: user.id,
+        email: user.email ?? null,
+      },
+      fingerprint,
+    );
+    // Google OAuth always uses cookies (redirect flow — no JS to read a JSON body)
+    this.cookieService.setTokenCookies(res, tokens);
+    return { user };
   }
 
   @Post('magic-link')
@@ -69,11 +114,25 @@ export class AuthController {
   }
 
   @Get('verify-magic')
-  async verifyMagicLink(@Query('token') token: string) {
+  async verifyMagicLink(
+    @Query('token') token: string,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: Response,
+    @Query('use_cookies') useCookies?: string,
+  ) {
     if (!token) {
       throw new BadRequestException('Token is required');
     }
-    return this.authService.verifyMagicLink(token);
+    const deviceFingerprint =
+      this.deviceFingerprintService.extractFromRequest(req);
+    const fingerprint =
+      this.deviceFingerprintService.generateFingerprint(deviceFingerprint);
+    const result = await this.authService.verifyMagicLink(token, fingerprint);
+    if (useCookies === 'true') {
+      this.cookieService.setTokenCookies(res, result.tokens);
+      return { user: result.user };
+    }
+    return result;
   }
 
   @Get('verify-email')
@@ -88,16 +147,39 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async refresh(
     @Body(new ValidationPipe({ transform: true })) dto: RefreshTokenDto,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: Response,
+    @Query('use_cookies') useCookies?: string,
   ) {
-    return this.authService.refreshTokens(dto.refreshToken);
+    const deviceFingerprint =
+      this.deviceFingerprintService.extractFromRequest(req);
+    const fingerprint =
+      this.deviceFingerprintService.generateFingerprint(deviceFingerprint);
+    // Support cookie-based refresh: fall back to cookie if body token absent
+    const rawToken = dto.refreshToken ?? req.cookies?.['refresh_token'];
+    if (!rawToken) {
+      throw new BadRequestException('Refresh token is required');
+    }
+    const result = await this.authService.refreshTokens(rawToken, fingerprint);
+    if (useCookies === 'true') {
+      this.cookieService.setTokenCookies(res, result);
+      return {};
+    }
+    return result;
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(
     @Body(new ValidationPipe({ transform: true })) dto: RefreshTokenDto,
+    @Req() req: any,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    await this.authService.logout(dto.refreshToken);
+    const rawToken = dto.refreshToken ?? req.cookies?.['refresh_token'];
+    if (rawToken) {
+      await this.authService.logout(rawToken);
+    }
+    this.cookieService.clearTokenCookies(res);
   }
 
   @Post('forgot-password')

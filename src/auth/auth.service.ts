@@ -1,7 +1,17 @@
-import { Injectable, BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from './mail.service';
+import {
+  DeviceFingerprintService,
+  DeviceFingerprint,
+} from './device-fingerprint.service';
+import { BruteForceProtectionService } from './brute-force-protection.service';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { SignupDto } from './dto/signup.dto';
@@ -22,6 +32,8 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
+    private readonly deviceFingerprintService: DeviceFingerprintService,
+    private readonly bruteForceService: BruteForceProtectionService,
   ) {}
 
   async findOrCreateGoogleUser(params: {
@@ -73,25 +85,44 @@ export class AuthService {
     return { accessToken };
   }
 
-  async issueTokensWithRefresh(user: JwtUser) {
+  async issueTokensWithRefresh(
+    user: JwtUser,
+    deviceFingerprint?: DeviceFingerprint,
+  ) {
     const { accessToken } = this.issueTokens(user);
 
     // Generate opaque refresh token
     const rawToken = crypto.randomBytes(40).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(rawToken)
+      .digest('hex');
     const expiresAt = new Date(
       Date.now() + REFRESH_TOKEN_EXPIRES_DAYS * 24 * 60 * 60 * 1000,
     );
 
     await this.prisma.refreshToken.create({
-      data: { userId: user.id, tokenHash, expiresAt },
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt,
+        userAgentHash: deviceFingerprint?.userAgentHash,
+        ipAddress: deviceFingerprint?.ipAddress,
+        acceptLanguage: deviceFingerprint?.acceptLanguage,
+      },
     });
 
     return { accessToken, refreshToken: rawToken };
   }
 
-  async refreshTokens(rawToken: string) {
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  async refreshTokens(
+    rawToken: string,
+    currentDeviceFingerprint?: DeviceFingerprint,
+  ) {
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(rawToken)
+      .digest('hex');
 
     const stored = await this.prisma.refreshToken.findUnique({
       where: { tokenHash },
@@ -106,6 +137,31 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token expired');
     }
 
+    // Validate device fingerprint if available
+    if (currentDeviceFingerprint && stored.userAgentHash) {
+      const storedFingerprint: DeviceFingerprint = {
+        userAgentHash: stored.userAgentHash,
+        ipAddress: stored.ipAddress || '',
+        acceptLanguage: stored.acceptLanguage || '',
+      };
+
+      if (
+        !this.deviceFingerprintService.compareFingerprints(
+          storedFingerprint,
+          currentDeviceFingerprint,
+        )
+      ) {
+        // Revoke all tokens for this user due to potential hijacking
+        await this.prisma.refreshToken.updateMany({
+          where: { userId: stored.userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+        throw new UnauthorizedException(
+          'Device fingerprint mismatch - potential session hijacking detected',
+        );
+      }
+    }
+
     // Rotate: revoke old token
     await this.prisma.refreshToken.update({
       where: { id: stored.id },
@@ -117,20 +173,22 @@ export class AuthService {
   }
 
   async logout(rawToken: string) {
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(rawToken)
+      .digest('hex');
 
     const stored = await this.prisma.refreshToken.findUnique({
       where: { tokenHash },
     });
 
-    if (!stored || stored.revokedAt) {
-      // Idempotent — already revoked or doesn't exist
+    if (!stored) {
+      // Idempotent — already deleted or doesn't exist
       return;
     }
 
-    await this.prisma.refreshToken.update({
+    await this.prisma.refreshToken.delete({
       where: { id: stored.id },
-      data: { revokedAt: new Date() },
     });
   }
 
@@ -229,13 +287,30 @@ export class AuthService {
     });
 
     if (!user?.password) {
+      // Record failed attempt for non-existent user to prevent enumeration
+      await this.bruteForceService.recordFailedAttempt(dto.email);
       throw new UnauthorizedException('Invalid credentials');
     }
 
     const matches = await bcrypt.compare(dto.password, user.password);
     if (!matches) {
-      throw new UnauthorizedException('Invalid credentials');
+      const result = await this.bruteForceService.recordFailedAttempt(
+        dto.email,
+      );
+
+      if (result.isLocked) {
+        throw new UnauthorizedException(
+          `Account locked. Try again in ${result.lockoutTimeLeft} seconds.`,
+        );
+      }
+
+      throw new UnauthorizedException(
+        `Invalid credentials. ${result.remainingAttempts} attempts remaining.`,
+      );
     }
+
+    // Clear failed attempts on successful login
+    await this.bruteForceService.clearFailedAttempts(dto.email);
 
     if (user.mfaEnabled) {
       if (!dto.totpCode || !user.mfaSecret) {
@@ -277,7 +352,10 @@ export class AuthService {
 
     // Generate a cryptographically random token
     const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(rawToken)
+      .digest('hex');
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
 
     await this.prisma.magicLink.create({
@@ -287,8 +365,14 @@ export class AuthService {
     await this.mailService.sendMagicLink(email, rawToken);
   }
 
-  async verifyMagicLink(rawToken: string) {
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  async verifyMagicLink(
+    rawToken: string,
+    deviceFingerprint?: DeviceFingerprint,
+  ) {
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(rawToken)
+      .digest('hex');
 
     const magicLink = await this.prisma.magicLink.findUnique({
       where: { tokenHash },
@@ -333,7 +417,10 @@ export class AuthService {
     if (!user) return;
 
     const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(rawToken)
+      .digest('hex');
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
 
     await this.prisma.passwordResetToken.create({
@@ -344,7 +431,10 @@ export class AuthService {
   }
 
   async resetPassword(rawToken: string, newPassword: string): Promise<void> {
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(rawToken)
+      .digest('hex');
     const resetToken = await this.prisma.passwordResetToken.findUnique({
       where: { tokenHash },
       include: { user: true },
@@ -372,9 +462,8 @@ export class AuthService {
         where: { id: resetToken.id },
         data: { usedAt: new Date() },
       }),
-      this.prisma.refreshToken.updateMany({
-        where: { userId: resetToken.userId, revokedAt: null },
-        data: { revokedAt: new Date() },
+      this.prisma.refreshToken.deleteMany({
+        where: { userId: resetToken.userId },
       }),
     ]);
   }
