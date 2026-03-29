@@ -31,6 +31,15 @@ export class NftMintService {
     process.env.SOROBAN_NFT_CONTRACT_ID ||
     'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEU4';
 
+  private readonly PLATFORM_WALLET =
+    process.env.PLATFORM_WALLET ||
+    'GDV76E6XN6A3Q3WXVZ4KPRQ7L6E6XN6A3Q3WXVZ4KPRQ7L6E6XN6'; // Placeholder if not set
+  private readonly PLATFORM_ROYALTY_BPS = parseInt(
+    process.env.PLATFORM_ROYALTY_BPS || '100',
+    10,
+  );
+  private readonly CREATOR_ROYALTY_BPS = 1000; // Requirement: 1000 bps for creator
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly stellarService: StellarService,
@@ -102,11 +111,28 @@ export class NftMintService {
       const contract = new StellarSdk.Contract(this.CONTRACT_ID);
 
       // Build the operation using contract.call
+      // 4. Build Royalty Map ScVal
+      const royaltyMapEntries = [
+        {
+          key: StellarSdk.Address.fromString(userWallet).toScVal(),
+          value: StellarSdk.nativeToScVal(this.CREATOR_ROYALTY_BPS, {
+            type: 'u32',
+          }),
+        },
+        {
+          key: StellarSdk.Address.fromString(this.PLATFORM_WALLET).toScVal(),
+          value: StellarSdk.nativeToScVal(this.PLATFORM_ROYALTY_BPS, {
+            type: 'u32',
+          }),
+        },
+      ];
+
       const op = contract.call(
         'mint',
         StellarSdk.Address.fromString(userWallet).toScVal(), // to: Address
         StellarSdk.nativeToScVal(BigInt(clip.id), { type: 'u128' }), // token_id: u128
         StellarSdk.nativeToScVal(metadataUri, { type: 'string' }), // uri: String
+        StellarSdk.nativeToScVal(royaltyMapEntries, { type: 'map' }), // royalties: Map<Address, u32>
       );
 
       const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -237,5 +263,88 @@ export class NftMintService {
     }
 
     return `ipfs://${cid}`;
+  }
+  /**
+   * Verified on-chain NFT ownership for a specific token and wallet.
+   * Query Soroban contract 'owner_of' and compare with walletAddress.
+   */
+  async verifyNFTOwnership(
+    tokenId: string,
+    walletAddress: string,
+  ): Promise<{
+    owned: boolean;
+    error?: string;
+  }> {
+    this.logger.log(
+      `Verifying ownership: tokenId=${tokenId}, wallet=${walletAddress}`,
+    );
+
+    try {
+      const rpcUrl = this.stellarService.rpcUrl;
+      const server = new StellarSdk.rpc.Server(rpcUrl);
+      const contract = new StellarSdk.Contract(this.CONTRACT_ID);
+
+      // Prepare simulation
+      const op = contract.call(
+        'owner_of',
+        StellarSdk.nativeToScVal(BigInt(tokenId), { type: 'u128' }),
+      );
+
+      // Create a dummy transaction for simulation (requires a valid source account format, but not necessarily funded for simulation only)
+      // Using a known neutral address or the walletAddress itself
+      const dummySource = walletAddress;
+      const sourceAccount = new StellarSdk.Account(dummySource, '0');
+
+      const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: '100',
+        networkPassphrase: this.stellarService.networkPassphrase,
+      })
+        .addOperation(op)
+        .setTimeout(StellarSdk.TimeoutInfinite)
+        .build();
+
+      const simulation = await server.simulateTransaction(tx);
+
+      if (simulation.error) {
+        return {
+          owned: false,
+          error: `Simulation failed: ${simulation.error}`,
+        };
+      }
+
+      if (!simulation.results || simulation.results.length === 0) {
+        return {
+          owned: false,
+          error: 'No simulation results returned',
+        };
+      }
+
+      const result = simulation.results[0];
+      if (!result.xdr) {
+        return {
+          owned: false,
+          error: 'Missing result XDR',
+        };
+      }
+
+      // Parse the return value
+      const returnValue = StellarSdk.xdr.ScVal.fromXDR(result.xdr, 'base64');
+      const ownerAddress = StellarSdk.scValToNative(returnValue);
+
+      const isOwner = ownerAddress === walletAddress;
+
+      return {
+        owned: isOwner,
+        error: isOwner ? undefined : 'Caller does not own the NFT on-chain',
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Ownership verification failed';
+      this.logger.error(`Ownership verification failed: ${message}`);
+      return {
+        owned: false,
+        error: message,
+      };
+    }
   }
 }

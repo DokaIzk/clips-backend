@@ -105,7 +105,7 @@ model Wallet {
   id          Int      @id @default(autoincrement())
   userId      Int
   address     String
-  chain       String   @default("solana")
+  chain       String   @default("stellar")
   type        String
   connectedAt DateTime @default(now())
   updatedAt   DateTime @updatedAt

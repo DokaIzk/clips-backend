@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { StrKey } from '@stellar/stellar-sdk';
+import { StrKey, Horizon } from '@stellar/stellar-sdk';
 
 export type StellarNetwork = 'testnet' | 'public';
 
@@ -69,6 +69,18 @@ export class StellarService {
       successful: Boolean(payload.successful),
       confirmedAt: payload.created_at ? new Date(payload.created_at) : undefined,
     };
+  }
+
+  async getAccountBalance(address: string): Promise<number> {
+    const server = new Horizon.Server(this.horizonUrl);
+    try {
+      const account = await server.loadAccount(address);
+      const nativeBalance = account.balances.find((b) => b.asset_type === 'native');
+      return nativeBalance ? parseFloat(nativeBalance.balance) : 0;
+    } catch (error) {
+      this.logger.error(`Failed to fetch balance for ${address}: ${error.message}`);
+      return 0;
+    }
   }
 
   /**

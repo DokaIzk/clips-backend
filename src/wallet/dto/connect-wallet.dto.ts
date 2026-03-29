@@ -6,7 +6,7 @@ export class ConnectWalletDto {
   address: string;
 
   @IsString()
-  @IsEnum(['stellar'])
+  @IsEnum(['stellar', 'base'])
   chain: string;
 
   @IsString()
