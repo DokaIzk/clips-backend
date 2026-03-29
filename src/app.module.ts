@@ -18,7 +18,7 @@ import { WalletModule } from './wallet/wallet.module';
 import { MintModule } from './mint/mint.module';
 import { PayoutModule } from './payout/payout.module';
 import { StellarModule } from './stellar/stellar.module';
-
+import { CsrfModule } from './csrf/csrf.module';
 
 @Module({
   imports: [
@@ -64,6 +64,7 @@ import { StellarModule } from './stellar/stellar.module';
     MintModule,
     PayoutModule,
     StellarModule,
+    CsrfModule,
   ],
   controllers: [AppController],
   providers: [
