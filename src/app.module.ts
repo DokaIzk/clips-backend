@@ -21,6 +21,7 @@ import { StellarModule } from './stellar/stellar.module';
 import { CsrfModule } from './csrf/csrf.module';
 import { EncryptionModule } from './encryption/encryption.module';
 import { UserPlatformModule } from './user-platform/user-platform.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { UserPlatformModule } from './user-platform/user-platform.module';
     CsrfModule,
     EncryptionModule,
     UserPlatformModule,
+    SubscriptionsModule,
   ],
   controllers: [AppController],
   providers: [
