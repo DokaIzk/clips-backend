@@ -31,6 +31,15 @@ export class NftMintService {
     process.env.SOROBAN_NFT_CONTRACT_ID ||
     'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEU4';
 
+  private readonly PLATFORM_WALLET =
+    process.env.PLATFORM_WALLET ||
+    'GDV76E6XN6A3Q3WXVZ4KPRQ7L6E6XN6A3Q3WXVZ4KPRQ7L6E6XN6'; // Placeholder if not set
+  private readonly PLATFORM_ROYALTY_BPS = parseInt(
+    process.env.PLATFORM_ROYALTY_BPS || '100',
+    10,
+  );
+  private readonly CREATOR_ROYALTY_BPS = 1000; // Requirement: 1000 bps for creator
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly stellarService: StellarService,
@@ -102,11 +111,28 @@ export class NftMintService {
       const contract = new StellarSdk.Contract(this.CONTRACT_ID);
 
       // Build the operation using contract.call
+      // 4. Build Royalty Map ScVal
+      const royaltyMapEntries = [
+        {
+          key: StellarSdk.Address.fromString(userWallet).toScVal(),
+          value: StellarSdk.nativeToScVal(this.CREATOR_ROYALTY_BPS, {
+            type: 'u32',
+          }),
+        },
+        {
+          key: StellarSdk.Address.fromString(this.PLATFORM_WALLET).toScVal(),
+          value: StellarSdk.nativeToScVal(this.PLATFORM_ROYALTY_BPS, {
+            type: 'u32',
+          }),
+        },
+      ];
+
       const op = contract.call(
         'mint',
         StellarSdk.Address.fromString(userWallet).toScVal(), // to: Address
         StellarSdk.nativeToScVal(BigInt(clip.id), { type: 'u128' }), // token_id: u128
         StellarSdk.nativeToScVal(metadataUri, { type: 'string' }), // uri: String
+        StellarSdk.nativeToScVal(royaltyMapEntries, { type: 'map' }), // royalties: Map<Address, u32>
       );
 
       const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
